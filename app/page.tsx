@@ -2,7 +2,7 @@
 
 "use client";
 import { useEffect, useState, useRef } from "react";
-import { signInWithPopup, User, onAuthStateChanged, signOut } from "firebase/auth";
+import { signInWithPopup, User, onAuthStateChanged, signOut, signInWithRedirect } from "firebase/auth";
 import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, setDoc, getDoc } from "firebase/firestore";
 import { auth, googleProvider, db } from "@/lib/firebase";
 
@@ -32,6 +32,20 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const cCountRef = useRef(0);
+  const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleSecretTrigger = () => {
+    cCountRef.current += 1;
+    if (cCountRef.current === 10) {
+      setShowLoginModal(true);
+      cCountRef.current = 0;
+    }
+
+    if (clickTimeoutRef.current) clearTimeout(clickTimeoutRef.current);
+    clickTimeoutRef.current = setTimeout(() => {
+      cCountRef.current = 0;
+    }, 600); // 600ms window for next tap
+  };
   const [showLoginModal, setShowLoginModal] = useState(false);
 
   // Notification State
@@ -151,30 +165,22 @@ export default function Home() {
     return () => unsubscribe();
   }, []);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'c' || e.key === 'C') {
-        cCountRef.current += 1;
-        if (cCountRef.current === 10) {
-          setShowLoginModal(true);
-          cCountRef.current = 0;
-        }
-      } else {
-        cCountRef.current = 0;
-      }
-    };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
 
   const handleLogin = async () => {
     try {
       const result = await signInWithPopup(auth, googleProvider);
       setUser(result.user);
       setShowLoginModal(false);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Login failed", error);
+      // Fallback to redirect if popup fails (common on mobile/tablet)
+      try {
+        await signInWithRedirect(auth, googleProvider);
+      } catch (redirectError: any) {
+        console.error("Redirect login failed", redirectError);
+        alert(`Login Failed: ${redirectError.message || 'Unknown error'}`);
+      }
     }
   };
 
@@ -698,7 +704,7 @@ export default function Home() {
           )}
 
           <div style={{ position: 'relative', zIndex: 2 }}>
-            <div style={{ position: 'relative', display: 'inline-block' }}>
+            <div style={{ position: 'relative', display: 'inline-block' }} onClick={handleSecretTrigger}>
               {shopSettings.logoUrl && (
                 <img
                   src={shopSettings.logoUrl}
@@ -731,7 +737,7 @@ export default function Home() {
         </header>
 
         <div style={{ textAlign: 'center', marginBottom: '3rem' }}>
-          <h1 className="title">{shopSettings.shopName}</h1>
+          <h1 className="title" onClick={handleSecretTrigger} style={{ cursor: 'pointer', userSelect: 'none' }}>{shopSettings.shopName}</h1>
           <p className="subtitle">Discover our curated selection of premium goods.</p>
         </div>
 
