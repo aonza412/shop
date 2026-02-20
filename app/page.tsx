@@ -31,6 +31,9 @@ export default function Home() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<User | null>(null);
+  const [isPreviewMode, setIsPreviewMode] = useState(false);
+  const showAdminControls = user !== null && !isPreviewMode;
+
   const cCountRef = useRef(0);
   const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -64,6 +67,7 @@ export default function Home() {
     facebookUrl?: string;
     tiktokUrl?: string;
     mapEmbedUrl?: string;
+    slideUrls?: string[];
   }
 
   const [shopSettings, setShopSettings] = useState<ShopSettings>({
@@ -74,11 +78,12 @@ export default function Home() {
     logoSize: 80,
     bannerHeight: 400,
     theme: "dark",
-    categories: ["General", "Electronics", "Fashion", "Home", "Art"]
+    categories: ["General", "Electronics", "Fashion", "Home", "Art"],
+    slideUrls: []
   });
   const [currentTheme, setCurrentTheme] = useState("dark");
   const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'appearance' | 'social'>('appearance');
+  const [settingsTab, setSettingsTab] = useState<'appearance' | 'social' | 'activities'>('appearance');
   const [settingsForm, setSettingsForm] = useState({
     shopName: "",
     logoUrl: "",
@@ -88,9 +93,10 @@ export default function Home() {
     bannerHeight: 400,
     facebookUrl: "",
     tiktokUrl: "",
-    mapEmbedUrl: ""
+    mapEmbedUrl: "",
+    slideUrls: [] as string[]
   });
-  const [settingsFiles, setSettingsFiles] = useState<{ logoFile: File | null; bannerFile: File | null }>({ logoFile: null, bannerFile: null });
+  const [settingsFiles, setSettingsFiles] = useState<{ logoFile: File | null; bannerFile: File | null; slideFiles: File[] }>({ logoFile: null, bannerFile: null, slideFiles: [] });
   const [isSettingsUploading, setIsSettingsUploading] = useState(false);
   const [newCategory, setNewCategory] = useState("");
   const [showCategoryInput, setShowCategoryInput] = useState(false);
@@ -109,6 +115,10 @@ export default function Home() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [showLightbox, setShowLightbox] = useState(false);
+  const [slideLightboxUrl, setSlideLightboxUrl] = useState<string | null>(null);
+
+  // Slideshow State
+  const [currentSlide, setCurrentSlide] = useState(0);
 
   const applyTheme = (theme: string) => {
     if (theme === 'light') {
@@ -122,6 +132,25 @@ export default function Home() {
     const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
     setCurrentTheme(newTheme);
     applyTheme(newTheme);
+  };
+
+  // Slideshow Effect
+  useEffect(() => {
+    if (!shopSettings.slideUrls || shopSettings.slideUrls.length <= 1) return;
+    const interval = setInterval(() => {
+      setCurrentSlide((prev) => (prev + 1) % shopSettings.slideUrls!.length);
+    }, 5000); // Change slide every 5 seconds
+    return () => clearInterval(interval);
+  }, [shopSettings.slideUrls]);
+
+  const nextSlide = () => {
+    if (!shopSettings.slideUrls) return;
+    setCurrentSlide((prev) => (prev + 1) % shopSettings.slideUrls!.length);
+  };
+
+  const prevSlide = () => {
+    if (!shopSettings.slideUrls) return;
+    setCurrentSlide((prev) => (prev - 1 + shopSettings.slideUrls!.length) % shopSettings.slideUrls!.length);
   };
 
   // Fetch settings
@@ -143,7 +172,8 @@ export default function Home() {
             tiktokUrl: data.tiktokUrl || "",
             mapEmbedUrl: data.mapEmbedUrl || "",
             theme: data.theme || "dark",
-            categories: data.categories || ["General", "Electronics", "Fashion", "Home", "Art"]
+            categories: data.categories || ["General", "Electronics", "Fashion", "Home", "Art"],
+            slideUrls: data.slideUrls || []
           });
 
           const initialTheme = data.theme || "dark";
@@ -212,9 +242,10 @@ export default function Home() {
       bannerHeight: shopSettings.bannerHeight || 400,
       facebookUrl: shopSettings.facebookUrl || "",
       tiktokUrl: shopSettings.tiktokUrl || "",
-      mapEmbedUrl: shopSettings.mapEmbedUrl || ""
+      mapEmbedUrl: shopSettings.mapEmbedUrl || "",
+      slideUrls: shopSettings.slideUrls || []
     });
-    setSettingsFiles({ logoFile: null, bannerFile: null });
+    setSettingsFiles({ logoFile: null, bannerFile: null, slideFiles: [] });
     setNewCategory("");
     setShowSettingsModal(true);
   };
@@ -265,6 +296,22 @@ export default function Home() {
     }
   };
 
+  const handleAddPendingSlide = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return;
+    const filesArray = Array.from(e.target.files);
+    setSettingsFiles(prev => ({ ...prev, slideFiles: [...prev.slideFiles, ...filesArray] }));
+    // Reset input value so same files can be selected again if removed
+    e.target.value = "";
+  };
+
+  const handleRemoveExistingSlide = (urlToRemove: string) => {
+    setSettingsForm(prev => ({ ...prev, slideUrls: prev.slideUrls.filter(url => url !== urlToRemove) }));
+  };
+
+  const handleRemovePendingSlide = (indexToRemove: number) => {
+    setSettingsFiles(prev => ({ ...prev, slideFiles: prev.slideFiles.filter((_, i) => i !== indexToRemove) }));
+  };
+
   const handleSettingsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSettingsUploading(true);
@@ -273,33 +320,65 @@ export default function Home() {
     try {
       // Upload Logo
       if (settingsFiles.logoFile) {
-        // Delete old logo if exists
-        if (shopSettings.logoUrl) await deleteCloudinaryImage(shopSettings.logoUrl);
-
         const formData = new FormData();
         formData.append('file', settingsFiles.logoFile);
         const res = await fetch('/api/upload', { method: 'POST', body: formData });
-        if (res.ok) {
-          const data = await res.json();
-          updatedForm.logoUrl = data.url;
+        if (!res.ok) throw new Error('Failed to upload logo');
+        const data = await res.json();
+        updatedForm.logoUrl = data.url;
+
+        // Delete old logo after successful new upload
+        if (shopSettings.logoUrl && shopSettings.logoUrl !== updatedForm.logoUrl) {
+          await deleteCloudinaryImage(shopSettings.logoUrl);
         }
+      } else if (updatedForm.logoUrl === "" && shopSettings.logoUrl) {
+        // User cleared the logo
+        await deleteCloudinaryImage(shopSettings.logoUrl);
       }
 
       // Upload Banner
       if (settingsFiles.bannerFile) {
-        // Delete old banner if exists
-        if (shopSettings.bannerUrl) await deleteCloudinaryImage(shopSettings.bannerUrl);
-
         const formData = new FormData();
         formData.append('file', settingsFiles.bannerFile);
         const res = await fetch('/api/upload', { method: 'POST', body: formData });
-        if (res.ok) {
-          const data = await res.json();
-          updatedForm.bannerUrl = data.url;
+        if (!res.ok) throw new Error('Failed to upload banner');
+        const data = await res.json();
+        updatedForm.bannerUrl = data.url;
+
+        // Delete old banner after successful new upload
+        if (shopSettings.bannerUrl && shopSettings.bannerUrl !== updatedForm.bannerUrl) {
+          await deleteCloudinaryImage(shopSettings.bannerUrl);
         }
+      } else if (updatedForm.bannerUrl === "" && shopSettings.bannerUrl) {
+        // User cleared the banner
+        await deleteCloudinaryImage(shopSettings.bannerUrl);
       }
 
       const docRef = doc(db, "settings", "general");
+
+      // Upload Activity Slides
+      let finalSlideUrls = [...(settingsForm.slideUrls || [])];
+
+      // Delete removed slides
+      const removedSlides = (shopSettings.slideUrls || []).filter(url => !finalSlideUrls.includes(url));
+      for (const url of removedSlides) {
+        await deleteCloudinaryImage(url);
+      }
+
+      // Upload new slides
+      if (settingsFiles.slideFiles && settingsFiles.slideFiles.length > 0) {
+        for (const file of settingsFiles.slideFiles) {
+          const formData = new FormData();
+          formData.append('file', file);
+          const res = await fetch('/api/upload', { method: 'POST', body: formData });
+          if (res.ok) {
+            const data = await res.json();
+            finalSlideUrls.push(data.url);
+          }
+        }
+      }
+      updatedForm.slideUrls = finalSlideUrls;
+
       await setDoc(docRef, updatedForm, { merge: true });
 
       setShopSettings({ ...shopSettings, ...updatedForm });
@@ -444,10 +523,7 @@ export default function Home() {
             position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)',
             display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000, backdropFilter: 'blur(5px)'
           }}>
-            <div style={{
-              background: 'var(--bg-secondary)', padding: '2rem', borderRadius: '16px',
-              textAlign: 'center', border: '1px solid var(--card-border)', maxWidth: '90%', width: '400px', color: 'var(--text-primary)'
-            }}>
+            <div className="modal-content-container" style={{ textAlign: 'center', maxWidth: '400px' }}>
               <h2 style={{ marginBottom: '1.5rem' }}>Admin Access</h2>
               <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
                 <button onClick={() => setShowLoginModal(false)} className="btn btn-secondary">Cancel</button>
@@ -463,15 +539,13 @@ export default function Home() {
             position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)',
             display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000, backdropFilter: 'blur(5px)'
           }}>
-            <div style={{
-              background: 'var(--bg-secondary)', padding: '2rem', borderRadius: '16px',
-              border: '1px solid var(--card-border)', maxWidth: '90%', width: '500px', color: 'var(--text-primary)'
-            }}>
+            <div className="modal-content-container">
               <h2 style={{ marginBottom: '1.5rem' }}>Shop Settings</h2>
 
-              <div style={{ display: 'flex', gap: '1rem', marginBottom: '1.5rem', borderBottom: '1px solid var(--card-border)' }}>
-                <button type="button" onClick={() => setSettingsTab('appearance')} style={{ background: 'none', border: 'none', borderBottom: settingsTab === 'appearance' ? '2px solid var(--accent)' : '2px solid transparent', color: settingsTab === 'appearance' ? 'var(--text-primary)' : 'var(--text-secondary)', padding: '0.5rem 1rem', cursor: 'pointer', fontWeight: 500 }}>Appearance</button>
-                <button type="button" onClick={() => setSettingsTab('social')} style={{ background: 'none', border: 'none', borderBottom: settingsTab === 'social' ? '2px solid var(--accent)' : '2px solid transparent', color: settingsTab === 'social' ? 'var(--text-primary)' : 'var(--text-secondary)', padding: '0.5rem 1rem', cursor: 'pointer', fontWeight: 500 }}>Social & Map</button>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1.5rem', borderBottom: '1px solid var(--card-border)' }}>
+                <button type="button" onClick={() => setSettingsTab('appearance')} style={{ background: 'none', border: 'none', borderBottom: settingsTab === 'appearance' ? '2px solid var(--accent)' : '2px solid transparent', color: settingsTab === 'appearance' ? 'var(--text-primary)' : 'var(--text-secondary)', padding: '0.5rem', cursor: 'pointer', fontWeight: 500 }}>Appearance</button>
+                <button type="button" onClick={() => setSettingsTab('activities')} style={{ background: 'none', border: 'none', borderBottom: settingsTab === 'activities' ? '2px solid var(--accent)' : '2px solid transparent', color: settingsTab === 'activities' ? 'var(--text-primary)' : 'var(--text-secondary)', padding: '0.5rem', cursor: 'pointer', fontWeight: 500 }}>Activities</button>
+                <button type="button" onClick={() => setSettingsTab('social')} style={{ background: 'none', border: 'none', borderBottom: settingsTab === 'social' ? '2px solid var(--accent)' : '2px solid transparent', color: settingsTab === 'social' ? 'var(--text-primary)' : 'var(--text-secondary)', padding: '0.5rem', cursor: 'pointer', fontWeight: 500 }}>Social/Map</button>
               </div>
 
               <form onSubmit={handleSettingsSubmit}>
@@ -495,14 +569,48 @@ export default function Home() {
                         }}
                       />
                       {(settingsFiles.logoFile || settingsForm.logoUrl) && (
-                        <div style={{ marginTop: '0.5rem', width: '100px', height: '100px', borderRadius: settingsForm.logoShape === 'circle' ? '50%' : '8px', overflow: 'hidden', border: '1px solid var(--card-border)', background: '#222' }}>
-                          <img
-                            src={settingsFiles.logoFile ? URL.createObjectURL(settingsFiles.logoFile) : settingsForm.logoUrl}
-                            alt="Logo Preview"
-                            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-                          />
+                        <div style={{ marginTop: '0.5rem', display: 'flex', alignItems: 'flex-start', gap: '1rem' }}>
+                          <div style={{ width: '100px', height: '100px', borderRadius: settingsForm.logoShape === 'circle' ? '50%' : '8px', overflow: 'hidden', border: '1px solid var(--card-border)', background: '#222' }}>
+                            <img
+                              src={settingsFiles.logoFile ? URL.createObjectURL(settingsFiles.logoFile) : settingsForm.logoUrl}
+                              alt="Logo Preview"
+                              style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => { setSettingsFiles({ ...settingsFiles, logoFile: null }); setSettingsForm({ ...settingsForm, logoUrl: "" }); }}
+                            className="btn btn-secondary"
+                            style={{ padding: '0.3rem 0.6rem', fontSize: '0.8rem' }}
+                          >
+                            Remove
+                          </button>
                         </div>
                       )}
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Logo Size ({settingsForm.logoSize}px)</label>
+                      <input
+                        type="range"
+                        min="40"
+                        max="200"
+                        step="5"
+                        className="form-input"
+                        value={settingsForm.logoSize}
+                        onChange={(e) => setSettingsForm({ ...settingsForm, logoSize: parseInt(e.target.value) })}
+                        style={{ padding: 0 }}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Logo Shape</label>
+                      <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
+                        {['rectangle', 'square', 'circle'].map(shape => (
+                          <label key={shape} style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', textTransform: 'capitalize' }}>
+                            <input type="radio" value={shape} checked={settingsForm.logoShape === shape} onChange={(e) => setSettingsForm({ ...settingsForm, logoShape: e.target.value })} style={{ marginRight: '0.5rem' }} />
+                            {shape}
+                          </label>
+                        ))}
+                      </div>
                     </div>
 
                     <div className="form-group">
@@ -518,12 +626,22 @@ export default function Home() {
                         }}
                       />
                       {(settingsFiles.bannerFile || settingsForm.bannerUrl) && (
-                        <div style={{ marginTop: '0.5rem', width: '100%', height: '100px', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--card-border)' }}>
-                          <img
-                            src={settingsFiles.bannerFile ? URL.createObjectURL(settingsFiles.bannerFile) : settingsForm.bannerUrl}
-                            alt="Banner Preview"
-                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                          />
+                        <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                          <div style={{ width: '100%', height: '100px', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--card-border)' }}>
+                            <img
+                              src={settingsFiles.bannerFile ? URL.createObjectURL(settingsFiles.bannerFile) : settingsForm.bannerUrl}
+                              alt="Banner Preview"
+                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => { setSettingsFiles({ ...settingsFiles, bannerFile: null }); setSettingsForm({ ...settingsForm, bannerUrl: "" }); }}
+                            className="btn btn-secondary"
+                            style={{ alignSelf: 'flex-start', padding: '0.3rem 0.6rem', fontSize: '0.8rem' }}
+                          >
+                            Remove Flag/Banner
+                          </button>
                         </div>
                       )}
                     </div>
@@ -542,31 +660,8 @@ export default function Home() {
                       />
                     </div>
 
-                    <div className="form-group">
-                      <label className="form-label">Logo Shape</label>
-                      <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
-                        {['rectangle', 'square', 'circle'].map(shape => (
-                          <label key={shape} style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', textTransform: 'capitalize' }}>
-                            <input type="radio" value={shape} checked={settingsForm.logoShape === shape} onChange={(e) => setSettingsForm({ ...settingsForm, logoShape: e.target.value })} style={{ marginRight: '0.5rem' }} />
-                            {shape}
-                          </label>
-                        ))}
-                      </div>
-                    </div>
 
-                    <div className="form-group">
-                      <label className="form-label">Logo Size ({settingsForm.logoSize}px)</label>
-                      <input
-                        type="range"
-                        min="40"
-                        max="200"
-                        step="5"
-                        className="form-input"
-                        value={settingsForm.logoSize}
-                        onChange={(e) => setSettingsForm({ ...settingsForm, logoSize: parseInt(e.target.value) })}
-                        style={{ padding: 0 }}
-                      />
-                    </div>
+
                   </>
                 )}
 
@@ -590,6 +685,50 @@ export default function Home() {
                     </div>
                   </>
                 )}
+
+                {settingsTab === 'activities' && (
+                  <>
+                    <div className="form-group">
+                      <label className="form-label">Activity Slides</label>
+                      <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', marginBottom: '1rem' }}>
+                        {/* Existing Slides */}
+                        {(settingsForm.slideUrls || []).map((url, i) => (
+                          <div key={`existing-${i}`} style={{ position: 'relative', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--card-border)' }}>
+                            <img src={url} alt={`Slide ${i}`} style={{ width: '100%', height: '100px', objectFit: 'cover' }} />
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveExistingSlide(url)}
+                              style={{ position: 'absolute', top: '5px', right: '5px', background: 'rgba(0,0,0,0.6)', color: '#ff4d4f', border: 'none', borderRadius: '50%', width: '24px', height: '24px', cursor: 'pointer', fontSize: '12px' }}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                        {/* Pending Slides */}
+                        {(settingsFiles.slideFiles || []).map((file, i) => (
+                          <div key={`pending-${i}`} style={{ position: 'relative', borderRadius: '8px', overflow: 'hidden', border: '2px dashed var(--accent)', padding: '2px' }}>
+                            <span style={{ position: 'absolute', top: '5px', left: '5px', background: 'var(--accent)', color: '#fff', fontSize: '10px', padding: '2px 4px', borderRadius: '4px', zIndex: 10 }}>NEW</span>
+                            <img src={URL.createObjectURL(file)} alt={`New Slide ${i}`} style={{ width: '100%', height: '100px', objectFit: 'cover', borderRadius: '4px' }} />
+                            <button
+                              type="button"
+                              onClick={() => handleRemovePendingSlide(i)}
+                              style={{ position: 'absolute', top: '5px', right: '5px', background: 'rgba(0,0,0,0.6)', color: '#ff4d4f', border: 'none', borderRadius: '50%', width: '24px', height: '24px', cursor: 'pointer', fontSize: '12px', zIndex: 10 }}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ padding: '1rem', border: '1px dashed var(--card-border)', borderRadius: '8px', textAlign: 'center' }}>
+                        <label style={{ cursor: 'pointer', color: 'var(--accent)', fontWeight: 500 }}>
+                          + Select Slide Images
+                          <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handleAddPendingSlide} multiple />
+                        </label>
+                      </div>
+                    </div>
+                  </>
+                )}
                 <div style={{ display: 'flex', gap: '1rem', justifyContent: 'flex-end', marginTop: '2rem' }}>
                   <button type="button" onClick={() => setShowSettingsModal(false)} className="btn btn-secondary" disabled={isSettingsUploading}>Cancel</button>
                   <button type="submit" className="btn" disabled={isSettingsUploading}>{isSettingsUploading ? 'Saving...' : 'Save Changes'}</button>
@@ -605,10 +744,7 @@ export default function Home() {
             position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.7)',
             display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000, backdropFilter: 'blur(5px)'
           }}>
-            <div style={{
-              background: 'var(--bg-secondary)', padding: '2rem', borderRadius: '16px',
-              border: '1px solid var(--card-border)', maxWidth: '90%', width: '500px', color: 'var(--text-primary)'
-            }}>
+            <div className="modal-content-container">
               <h2 style={{ marginBottom: '1.5rem' }}>{editingProduct ? 'Edit Product' : 'Add New Product'}</h2>
               <form onSubmit={handleProductSubmit}>
                 <div className="form-group">
@@ -693,11 +829,18 @@ export default function Home() {
           )}
 
           {user && (
-            <div style={{ position: 'absolute', top: '20px', right: '20px', display: 'flex', alignItems: 'center', gap: '1rem', zIndex: 3 }}>
-              <div style={{ padding: '0.4rem 0.8rem', background: 'rgba(94, 106, 210, 0.6)', borderRadius: '20px', backdropFilter: 'blur(4px)' }}>
-                <span style={{ color: '#fff', fontSize: '0.8rem', fontWeight: 600 }}>{user.displayName}</span>
+            <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: '0.5rem', zIndex: 3 }}>
+              <button
+                onClick={() => setIsPreviewMode(!isPreviewMode)}
+                className="btn btn-secondary"
+                style={{ padding: '0.4rem 0.6rem', fontSize: '0.8rem', background: isPreviewMode ? 'var(--accent)' : 'rgba(0,0,0,0.4)', color: 'white', border: '1px solid rgba(255,255,255,0.3)', width: 'auto' }}
+              >
+                {isPreviewMode ? 'Exit Preview' : 'Preview'}
+              </button>
+              <div style={{ padding: '0.4rem 0.6rem', background: 'rgba(94, 106, 210, 0.6)', borderRadius: '20px', backdropFilter: 'blur(4px)' }}>
+                <span style={{ color: '#fff', fontSize: '0.8rem', fontWeight: 600 }}>{user.displayName?.split(" ")[0]}</span>
               </div>
-              <button onClick={() => signOut(auth)} className="btn btn-secondary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', background: 'rgba(0,0,0,0.4)', color: 'white', border: '1px solid rgba(255,255,255,0.3)', width: 'auto' }}>
+              <button onClick={() => signOut(auth)} className="btn btn-secondary" style={{ padding: '0.4rem 0.6rem', fontSize: '0.8rem', background: 'rgba(0,0,0,0.4)', color: 'white', border: '1px solid rgba(255,255,255,0.3)', width: 'auto' }}>
                 Logout
               </button>
             </div>
@@ -721,7 +864,7 @@ export default function Home() {
                   }}
                 />
               )}
-              {user && (
+              {showAdminControls && (
                 <button onClick={openSettingsModal} title="Edit Shop Settings" style={{
                   position: 'absolute', top: -10, right: -40, background: 'var(--primary)', color: 'white', border: 'none', borderRadius: '50%', width: 32, height: 32, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
                 }}>
@@ -741,6 +884,126 @@ export default function Home() {
           <p className="subtitle">Discover our curated selection of premium goods.</p>
         </div>
 
+        {/* Activity Slides */}
+        {shopSettings.slideUrls && shopSettings.slideUrls.length > 0 && selectedCategory === null && (
+          <div className="slideshow-container">
+            <h2 style={{ textAlign: 'center', marginBottom: '1.5rem' }}>Activities & Promotions</h2>
+            <div style={{
+              position: 'relative',
+              borderRadius: '16px',
+              overflow: 'hidden',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+              background: 'var(--card-bg)',
+              aspectRatio: '16/9' // Maintain a nice wide aspect ratio
+            }}>
+              {shopSettings.slideUrls.map((url, index) => (
+                <img
+                  key={index}
+                  src={url}
+                  alt={`Activity Slide ${index + 1}`}
+                  onClick={() => setSlideLightboxUrl(url)}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover',
+                    display: 'block',
+                    opacity: index === currentSlide ? 1 : 0,
+                    transition: 'opacity 0.8s ease-in-out',
+                    zIndex: index === currentSlide ? 1 : 0,
+                    cursor: 'pointer'
+                  }}
+                />
+              ))}
+
+              {/* Prev/Next Buttons */}
+              {shopSettings.slideUrls.length > 1 && (
+                <>
+                  <button
+                    onClick={prevSlide}
+                    style={{
+                      position: 'absolute',
+                      top: '50%',
+                      left: '10px',
+                      transform: 'translateY(-50%)',
+                      background: 'rgba(0,0,0,0.5)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '50%',
+                      width: '40px',
+                      height: '40px',
+                      cursor: 'pointer',
+                      zIndex: 2,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '18px'
+                    }}
+                  >
+                    ❮
+                  </button>
+                  <button
+                    onClick={nextSlide}
+                    style={{
+                      position: 'absolute',
+                      top: '50%',
+                      right: '10px',
+                      transform: 'translateY(-50%)',
+                      background: 'rgba(0,0,0,0.5)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '50%',
+                      width: '40px',
+                      height: '40px',
+                      cursor: 'pointer',
+                      zIndex: 2,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '18px'
+                    }}
+                  >
+                    ❯
+                  </button>
+                </>
+              )}
+
+              {/* Navigation Dots */}
+              {shopSettings.slideUrls.length > 1 && (
+                <div style={{
+                  position: 'absolute',
+                  bottom: '15px',
+                  left: '50%',
+                  transform: 'translateX(-50%)',
+                  display: 'flex',
+                  gap: '8px',
+                  zIndex: 2
+                }}>
+                  {shopSettings.slideUrls.map((_, index) => (
+                    <button
+                      key={index}
+                      onClick={() => setCurrentSlide(index)}
+                      style={{
+                        width: '10px',
+                        height: '10px',
+                        borderRadius: '50%',
+                        border: 'none',
+                        background: index === currentSlide ? 'var(--accent)' : 'rgba(255,255,255,0.5)',
+                        cursor: 'pointer',
+                        padding: 0,
+                        transition: 'background 0.3s ease'
+                      }}
+                      aria-label={`Go to slide ${index + 1}`}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {user && selectedCategory === null && (
           <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '2rem' }}>
             {/* Logic moved to Add Category card, so this main button might be redundant or can be kept for quick product add if needed. 
@@ -758,7 +1021,7 @@ export default function Home() {
               // Show Categories
               <>
                 {shopSettings.categories && shopSettings.categories
-                  .filter(category => user || products.some(p => (p.category || 'General') === category))
+                  .filter(category => showAdminControls || products.some(p => (p.category || 'General') === category))
                   .map((category) => {
                     // Find first product in category to use as cover image
                     const coverProduct = products.find(p => (p.category || 'General') === category);
@@ -782,7 +1045,7 @@ export default function Home() {
                           <p className="card-desc">{products.filter(p => (p.category || 'General') === category).length} Products</p>
                         </div>
 
-                        {user && (
+                        {showAdminControls && (
                           <div style={{
                             position: 'absolute', top: '10px', right: '10px', display: 'flex', gap: '0.5rem',
                             background: 'rgba(0,0,0,0.6)', padding: '0.5rem', borderRadius: '8px', backdropFilter: 'blur(4px)'
@@ -800,10 +1063,10 @@ export default function Home() {
                     );
                   })}
                 {/* Add Category Card */}
-                {user && (
+                {showAdminControls && (
                   <article className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '300px', borderStyle: 'dashed' }}>
                     {showCategoryInput ? (
-                      <form onSubmit={handleAddCategory} style={{ padding: '2rem', width: '100%', textAlign: 'center' }}>
+                      <form onSubmit={handleAddCategory} style={{ padding: '1rem', width: '100%', textAlign: 'center' }}>
                         <h3 style={{ marginBottom: '1rem' }}>New Category</h3>
                         <input
                           autoFocus
@@ -831,15 +1094,15 @@ export default function Home() {
             ) : (
               // Show Products in Selected Category
               <>
-                <div style={{ gridColumn: '1 / -1', marginBottom: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ gridColumn: '1 / -1', marginBottom: '1rem', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <button onClick={() => setSelectedCategory(null)} className="btn btn-secondary">
-                      ← Back to Categories
+                    <button onClick={() => setSelectedCategory(null)} className="btn btn-secondary" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem' }}>
+                      ← Back
                     </button>
-                    <h2 style={{ margin: 0 }}>{selectedCategory}</h2>
+                    <h2 style={{ margin: 0, fontSize: '1.5rem' }}>{selectedCategory}</h2>
                   </div>
-                  {user && (
-                    <button onClick={openAddProduct} className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  {showAdminControls && (
+                    <button onClick={openAddProduct} className="btn" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', fontSize: '0.9rem' }}>
                       <span>+</span> Add Product
                     </button>
                   )}
@@ -872,7 +1135,7 @@ export default function Home() {
                         }}>{product.description}</p>
                       </div>
 
-                      {user && (
+                      {showAdminControls && (
                         <div style={{
                           position: 'absolute', top: '10px', right: '10px', display: 'flex', gap: '0.5rem',
                           background: 'rgba(0,0,0,0.6)', padding: '0.5rem', borderRadius: '8px', backdropFilter: 'blur(4px)'
@@ -894,7 +1157,7 @@ export default function Home() {
 
         {/* Footer */}
         <footer style={{ marginTop: '4rem', padding: '2rem 0', borderTop: '1px solid var(--card-border)', position: 'relative' }}>
-          {user && (
+          {showAdminControls && (
             <button
               onClick={openSettingsModal}
               title="Edit Footer Info"
@@ -1038,6 +1301,38 @@ export default function Home() {
           <img
             src={viewingProduct.imageUrl}
             alt="Full View"
+            style={{
+              maxWidth: '95vw',
+              maxHeight: '95vh',
+              objectFit: 'contain',
+              boxShadow: '0 0 20px rgba(0,0,0,0.5)'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+
+      {/* Lightbox for Activity Slides */}
+      {slideLightboxUrl && (
+        <div
+          className="modal-overlay"
+          style={{ zIndex: 3000, background: 'rgba(0,0,0,0.9)' }}
+          onClick={() => setSlideLightboxUrl(null)}
+        >
+          <button style={{
+            position: 'absolute',
+            top: '20px',
+            right: '20px',
+            background: 'transparent',
+            border: 'none',
+            color: 'white',
+            fontSize: '3rem',
+            lineHeight: 1,
+            cursor: 'pointer'
+          }}>×</button>
+          <img
+            src={slideLightboxUrl}
+            alt="Full Slide View"
             style={{
               maxWidth: '95vw',
               maxHeight: '95vh',
